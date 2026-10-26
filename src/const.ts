@@ -444,6 +444,14 @@ export const FLOW_NODE_PV_COLOR = PALETTE.solar;
 export const FLOW_NODE_GRID_COLOR = PALETTE.grid;
 export const FLOW_NODE_HOME_COLOR = PALETTE.home;
 export const FLOW_NODE_BATTERY_COLOR = PALETTE.ok;
+export const FLOW_NODE_HEAT_PUMP_COLOR = PALETTE.heat;
+export const DEFAULT_FLOW_INDIVIDUAL_COLORS = [
+  PALETTE.heat,
+  PALETTE.dryAuto,
+  PALETTE.media,
+  PALETTE.light,
+];
+export const DEFAULT_FLOW_INDIVIDUAL_ICON = "mdi:power-plug-outline";
 export const FLOW_SELF_SUFFICIENCY_COLOR = PALETTE.ok;
 export const FLOW_REFRESH_MS = 5 * 60 * 1000;
 export const FLOW_NODE_SIZE = 72;

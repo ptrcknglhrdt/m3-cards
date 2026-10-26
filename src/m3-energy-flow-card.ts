@@ -11,6 +11,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import type {
   HomeAssistant,
   M3EnergyFlowCardConfig,
+  EnergyFlowIndividualDevice,
   LovelaceCard,
   LovelaceCardEditor,
   LovelaceGridOptions,
@@ -23,6 +24,9 @@ import {
   FLOW_NODE_GRID_COLOR,
   FLOW_NODE_HOME_COLOR,
   FLOW_NODE_BATTERY_COLOR,
+  FLOW_NODE_HEAT_PUMP_COLOR,
+  DEFAULT_FLOW_INDIVIDUAL_COLORS,
+  DEFAULT_FLOW_INDIVIDUAL_ICON,
   FLOW_SELF_SUFFICIENCY_COLOR,
   FLOW_REFRESH_MS,
   FLOW_NODE_SIZE,
@@ -41,7 +45,11 @@ import {
 import { glassCardStyles, glassCardClass } from "./shared/glass-card";
 import { renderCardHeader, cardHeaderStyles } from "./shared/card-header";
 import { shouldAnimate } from "./shared/animation";
-import { getEnergyDashboardEntities, fetchTodayChangeSum } from "./shared/ha-energy";
+import {
+  getEnergyDashboardEntities,
+  getEnergyDeviceEntities,
+  fetchTodayChangeSum,
+} from "./shared/ha-energy";
 import { localize, type TranslationKey } from "./localize";
 import { formatNumber } from "./shared/formatting";
 import { hassChangeMatters } from "./shared/should-update";
@@ -56,16 +64,16 @@ console.info(
 const HALF = FLOW_NODE_SIZE / 2;
 const VIEW_WIDTH = 320;
 const VIEW_HEIGHT = 250;
-const VIEW_HEIGHT_WITH_BATTERY = 310;
+const VIEW_HEIGHT_WITH_BATTERY = 350;
 const PV_POS = { x: 160, y: 46 };
 const GRID_POS = { x: 52, y: 160 };
 const HOME_POS = { x: 268, y: 160 };
-const BATTERY_POS = { x: HOME_POS.x, y: HOME_POS.y + 90 };
+const ROW3_Y = 280;
 const SPLIT_BEND_Y = 145;
 const CORNER_RADIUS = 20;
 
 interface FlowNodeData {
-  key: "pv" | "grid" | "home" | "battery";
+  key: string;
   x: number;
   y: number;
   color: string;
@@ -105,6 +113,7 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
   @state() private _batteryDischarge = 0;
   @state() private _hasSolar = false;
   @state() private _hasBattery = false;
+  @state() private _individualValues: Array<{ config: EnergyFlowIndividualDevice; value: number }> = [];
   @state() private _noEnergyDashboard = false;
   @state() private _loading = true;
 
@@ -183,10 +192,11 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
   private _maybeFetch(): void {
     if (!this.hass || !this._config) return;
     const c = this._config;
+    const indKeys = c.individual?.map((i) => `${i.entity ?? ""}:${i.name ?? ""}`).join("|") ?? "";
     const key =
       c.source === "entities"
-        ? `entities|${c.solar_entity}|${c.grid_import_entity}|${c.grid_export_entity}|${c.battery_entity}`
-        : "energy";
+        ? `entities|${c.solar_entity}|${c.grid_import_entity}|${c.grid_export_entity}|${c.battery_entity}|${indKeys}`
+        : `energy|${indKeys}`;
     if (key === this._lastFetchKey) return;
     this._lastFetchKey = key;
     this._fetchData();
@@ -246,6 +256,52 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
           this._batteryDischarge = batteryDischarge;
         }
       }
+
+      const indConfigs = config.individual ?? [];
+      const indValues: Array<{ config: EnergyFlowIndividualDevice; value: number }> = [];
+
+      for (let i = 0; i < indConfigs.length; i++) {
+        const ind = indConfigs[i];
+        if (!ind) continue;
+        let val = 0;
+        if (ind.entity) {
+          if (config.source === "entities") {
+            val = this._liveValueInKwh(ind.entity);
+          } else {
+            try {
+              val = await fetchTodayChangeSum(this.hass, [ind.entity]);
+            } catch {
+              val = 0;
+            }
+            if (val === 0) {
+              val = this._liveValueInKwh(ind.entity);
+            }
+          }
+        }
+        indValues.push({ config: ind, value: val });
+      }
+
+      if (config.source !== "entities" && indConfigs.length === 0) {
+        try {
+          const deviceEntities = await getEnergyDeviceEntities(this.hass);
+          if (deviceEntities && deviceEntities.length > 0) {
+            for (let i = 0; i < Math.min(2, deviceEntities.length); i++) {
+              const entityId = deviceEntities[i];
+              const val = await fetchTodayChangeSum(this.hass, [entityId]);
+              const st = this.hass.states[entityId];
+              const friendlyName = st?.attributes?.friendly_name;
+              indValues.push({
+                config: { entity: entityId, name: friendlyName },
+                value: val,
+              });
+            }
+          }
+        } catch {
+          // ignore auto-discovery errors
+        }
+      }
+
+      this._individualValues = indValues;
     } catch (e) {
       console.error("m3-energy-flow-card: failed to load energy data", e);
     } finally {
@@ -258,6 +314,67 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
     return formatNumber(this._language, value, { maximumFractionDigits: 2 });
   }
 
+  private _resolveIndividualMeta(
+    ind: EnergyFlowIndividualDevice,
+    index: number,
+  ): { name: string; icon: string; color: string } {
+    const stateName =
+      (ind.entity ? this.hass?.states[ind.entity]?.attributes?.friendly_name : "") || "";
+    const rawName = (ind.name || stateName || "").trim();
+    const lower = `${rawName} ${ind.entity ?? ""}`.toLowerCase();
+
+    const isHeatPump =
+      lower.includes("wärmepumpe") ||
+      lower.includes("waermepumpe") ||
+      lower.includes("heat pump") ||
+      lower.includes("heatpump") ||
+      lower.includes("heizung") ||
+      lower.includes("warmwasser") ||
+      lower.includes("wp");
+
+    const isCar =
+      lower.includes("car") ||
+      lower.includes("auto") ||
+      lower.includes("ev") ||
+      lower.includes("wallbox") ||
+      lower.includes("charger") ||
+      lower.includes("vehicle") ||
+      lower.includes("fahrzeug");
+
+    let defaultName = ind.name;
+    if (!defaultName) {
+      if (isHeatPump) {
+        defaultName = this._t("flow_node_heat_pump");
+      } else if (stateName) {
+        defaultName = stateName;
+      } else {
+        defaultName = `${this._t("flow_node_individual")} ${index + 1}`;
+      }
+    }
+
+    let defaultIcon = ind.icon;
+    if (!defaultIcon) {
+      if (isHeatPump) defaultIcon = "mdi:heat-pump";
+      else if (isCar) defaultIcon = "mdi:car-electric";
+      else defaultIcon = DEFAULT_FLOW_INDIVIDUAL_ICON;
+    }
+
+    let defaultColor = ind.color;
+    if (!defaultColor) {
+      if (isHeatPump) {
+        defaultColor = FLOW_NODE_HEAT_PUMP_COLOR;
+      } else {
+        defaultColor = DEFAULT_FLOW_INDIVIDUAL_COLORS[index % DEFAULT_FLOW_INDIVIDUAL_COLORS.length];
+      }
+    }
+
+    return {
+      name: defaultName || `${this._t("flow_node_individual")} ${index + 1}`,
+      icon: defaultIcon,
+      color: resolveThemeColor(defaultColor),
+    };
+  }
+
   private _buildDiagram(
     colors: {
       pv: string;
@@ -267,8 +384,16 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
     },
     showBattery: boolean,
   ): { nodes: FlowNodeData[]; flows: FlowLineData[]; viewHeight: number } {
-    const homeConsumption =
+    const activeIndividuals = this._individualValues.slice(0, 2);
+    const totalIndividual = activeIndividuals.reduce((acc, cur) => acc + cur.value, 0);
+
+    const subtractIndividual = this._config?.subtract_individual !== false;
+    const rawHomeConsumption =
       this._solarTotal + this._gridImport - this._gridExport - this._batteryCharge + this._batteryDischarge;
+    const homeConsumption = subtractIndividual
+      ? Math.max(0, rawHomeConsumption - totalIndividual)
+      : Math.max(0, rawHomeConsumption);
+
     const solarToHome = Math.max(0, this._solarTotal - this._gridExport);
 
     const nodes: FlowNodeData[] = [
@@ -287,7 +412,7 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
         y: HOME_POS.y,
         color: colors.home,
         icon: "mdi:home",
-        value: Math.max(0, homeConsumption),
+        value: homeConsumption,
         label: `${this._t("flow_node_home")} · kWh`,
       },
     ];
@@ -329,39 +454,98 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
       });
     }
 
+    const hasIndividuals = activeIndividuals.length > 0;
+
     if (showBattery) {
       const charging = this._batteryCharge >= this._batteryDischarge;
       const batteryValue = charging ? this._batteryCharge : this._batteryDischarge;
+      const batteryX = hasIndividuals ? PV_POS.x : HOME_POS.x;
       nodes.push({
         key: "battery",
-        x: BATTERY_POS.x,
-        y: BATTERY_POS.y,
+        x: batteryX,
+        y: ROW3_Y,
         color: colors.battery,
         icon: charging ? "mdi:battery-charging" : "mdi:battery-arrow-down-outline",
         value: batteryValue,
         label: `${this._t("flow_node_battery")} · kWh`,
       });
       if (batteryValue > 0) {
+        let batteryPath: string;
+        if (!hasIndividuals) {
+          batteryPath = charging
+            ? straightPath(HOME_POS.x, HOME_POS.y + HALF, HOME_POS.x, ROW3_Y - HALF)
+            : straightPath(HOME_POS.x, ROW3_Y - HALF, HOME_POS.x, HOME_POS.y + HALF);
+        } else {
+          batteryPath = charging
+            ? `M ${HOME_POS.x - HALF} 175 L 175 175 Q ${PV_POS.x} 175 ${PV_POS.x} 190 L ${PV_POS.x} ${ROW3_Y - HALF}`
+            : `M ${PV_POS.x} ${ROW3_Y - HALF} L ${PV_POS.x} 190 Q ${PV_POS.x} 175 175 175 L ${HOME_POS.x - HALF} 175`;
+        }
         flows.push({
           key: "battery-home",
-          path: charging
-            ? straightPath(HOME_POS.x, HOME_POS.y + HALF, BATTERY_POS.x, BATTERY_POS.y - HALF)
-            : straightPath(BATTERY_POS.x, BATTERY_POS.y - HALF, HOME_POS.x, HOME_POS.y + HALF),
+          path: batteryPath,
           color: colors.battery,
           value: batteryValue,
         });
       }
     }
 
-    return { nodes, flows, viewHeight: showBattery ? VIEW_HEIGHT_WITH_BATTERY : VIEW_HEIGHT };
+    if (activeIndividuals.length >= 1) {
+      const ind1 = activeIndividuals[0];
+      const meta1 = this._resolveIndividualMeta(ind1.config, 0);
+      nodes.push({
+        key: "individual-1",
+        x: HOME_POS.x,
+        y: ROW3_Y,
+        color: meta1.color,
+        icon: meta1.icon,
+        value: ind1.value,
+        label: `${meta1.name} · kWh`,
+      });
+      if (ind1.value > 0) {
+        flows.push({
+          key: "home-individual-1",
+          path: straightPath(HOME_POS.x, HOME_POS.y + HALF, HOME_POS.x, ROW3_Y - HALF),
+          color: meta1.color,
+          value: ind1.value,
+        });
+      }
+    }
+
+    if (activeIndividuals.length >= 2) {
+      const ind2 = activeIndividuals[1];
+      const meta2 = this._resolveIndividualMeta(ind2.config, 1);
+      nodes.push({
+        key: "individual-2",
+        x: GRID_POS.x,
+        y: ROW3_Y,
+        color: meta2.color,
+        icon: meta2.icon,
+        value: ind2.value,
+        label: `${meta2.name} · kWh`,
+      });
+      if (ind2.value > 0) {
+        flows.push({
+          key: "home-individual-2",
+          path: `M ${HOME_POS.x - HALF} 185 L ${GRID_POS.x + 15} 185 Q ${GRID_POS.x} 185 ${GRID_POS.x} 200 L ${GRID_POS.x} ${ROW3_Y - HALF}`,
+          color: meta2.color,
+          value: ind2.value,
+        });
+      }
+    }
+
+    const hasRow3 = showBattery || hasIndividuals;
+    return { nodes, flows, viewHeight: hasRow3 ? VIEW_HEIGHT_WITH_BATTERY : VIEW_HEIGHT };
   }
 
   protected shouldUpdate(changed: PropertyValues): boolean {
+    const individualEntities =
+      this._config?.individual?.map((i) => i.entity).filter((e): e is string => !!e) ?? [];
     return hassChangeMatters(changed, this.hass, [
       this._config?.solar_entity,
       this._config?.grid_import_entity,
       this._config?.grid_export_entity,
       this._config?.battery_entity,
+      ...individualEntities,
     ]);
   }
 
@@ -553,6 +737,7 @@ export class M3EnergyFlowCard extends TemplatedCard(LitElement) implements Lovel
     cardHeaderStyles,
     css`
       .diagram-wrap {
+        margin-top: 12px;
         transition: opacity 0.3s ease;
       }
 
@@ -666,15 +851,17 @@ declare global {
   }
 }
 
-const windowWithCards = window as unknown as {
-  customCards: Array<Record<string, unknown>>;
-};
-windowWithCards.customCards = windowWithCards.customCards || [];
-windowWithCards.customCards.push({
-  type: "m3-energy-flow-card",
-  name: "M3 Energy Flow Card",
-  description:
-    "Ein Material-3-Knoten-Diagramm der heutigen Energieflüsse zwischen PV, Netz und Haus.",
-  preview: true,
-  documentationURL: "https://github.com/j0sp0r/m3-cards",
-});
+if (typeof window !== "undefined") {
+  const windowWithCards = window as unknown as {
+    customCards: Array<Record<string, unknown>>;
+  };
+  windowWithCards.customCards = windowWithCards.customCards || [];
+  windowWithCards.customCards.push({
+    type: "m3-energy-flow-card",
+    name: "M3 Energy Flow Card",
+    description:
+      "Ein Material-3-Knoten-Diagramm der heutigen Energieflüsse zwischen PV, Netz und Haus.",
+    preview: true,
+    documentationURL: "https://github.com/j0sp0r/m3-cards",
+  });
+}

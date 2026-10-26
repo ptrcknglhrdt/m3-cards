@@ -1,6 +1,11 @@
 import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { HomeAssistant, LovelaceCardEditor, M3EnergyFlowCardConfig } from "./types";
+import type {
+  HomeAssistant,
+  LovelaceCardEditor,
+  M3EnergyFlowCardConfig,
+  EnergyFlowIndividualDevice,
+} from "./types";
 import { DEFAULT_FLOW_RADIUS } from "./const";
 import { localize, type TranslationKey } from "./localize";
 import { fireEvent, colorRow, opacityRow, editorStyles, type SchemaEntry } from "./shared/editor-helpers";
@@ -63,7 +68,18 @@ export class M3EnergyFlowCardEditor extends LitElement implements LovelaceCardEd
   }
 
   private _contentSchema(): SchemaEntry[] {
-    return [{ name: "show_self_sufficiency", selector: { boolean: {} } }];
+    return [
+      { name: "show_self_sufficiency", selector: { boolean: {} } },
+      { name: "subtract_individual", selector: { boolean: {} } },
+    ];
+  }
+
+  private _individualSchema(): SchemaEntry[] {
+    return [
+      { name: "entity", selector: { entity: { domain: "sensor" } } },
+      { name: "name", selector: { text: {} } },
+      { name: "icon", selector: { icon: {} } },
+    ];
   }
 
   private _animationSchema(): SchemaEntry[] {
@@ -107,6 +123,7 @@ export class M3EnergyFlowCardEditor extends LitElement implements LovelaceCardEd
       grid_export_entity: "editor_flow_grid_export_entity",
       battery_entity: "editor_flow_battery_entity",
       show_self_sufficiency: "editor_flow_show_self_sufficiency",
+      subtract_individual: "editor_flow_subtract_individual",
       animation: "editor_progress_animation",
       flow_speed: "editor_flow_speed",
       glass_background: "editor_glass_background",
@@ -190,6 +207,31 @@ export class M3EnergyFlowCardEditor extends LitElement implements LovelaceCardEd
     fireEvent(this, "config-changed", { config: this._config });
   }
 
+  private _individualPatch(index: number, patch: Partial<EnergyFlowIndividualDevice>): void {
+    if (!this._config) return;
+    const items = [...(this._config.individual ?? [])];
+    items[index] = { ...items[index], ...patch };
+    for (const [k, v] of Object.entries(items[index])) {
+      if (v === "" || v === undefined || v === null) delete (items[index] as Record<string, unknown>)[k];
+    }
+    this._config = { ...this._config, individual: items };
+    fireEvent(this, "config-changed", { config: this._config });
+  }
+
+  private _individualRemove(index: number): void {
+    if (!this._config) return;
+    const items = (this._config.individual ?? []).filter((_, i) => i !== index);
+    this._config = { ...this._config, individual: items };
+    fireEvent(this, "config-changed", { config: this._config });
+  }
+
+  private _individualAdd(): void {
+    if (!this._config) return;
+    const items = [...(this._config.individual ?? []), {}];
+    this._config = { ...this._config, individual: items };
+    fireEvent(this, "config-changed", { config: this._config });
+  }
+
   protected render() {
     if (!this.hass || !this._config) return nothing;
 
@@ -203,7 +245,10 @@ export class M3EnergyFlowCardEditor extends LitElement implements LovelaceCardEd
       grid_export_entity: this._config.grid_export_entity,
       battery_entity: this._config.battery_entity,
     };
-    const contentData = { show_self_sufficiency: this._config.show_self_sufficiency ?? true };
+    const contentData = {
+      show_self_sufficiency: this._config.show_self_sufficiency ?? true,
+      subtract_individual: this._config.subtract_individual ?? true,
+    };
     const animationData = {
       animation: this._config.animation ?? "auto",
       flow_speed: this._config.flow_speed ?? "normal",
@@ -221,6 +266,49 @@ export class M3EnergyFlowCardEditor extends LitElement implements LovelaceCardEd
               .computeLabel=${this._computeLabel}
               @value-changed=${this._valueChanged}
             ></ha-form>
+          </div>
+        </ha-expansion-panel>
+
+        <ha-expansion-panel outlined .header=${this._t("editor_flow_individual_title")}>
+          <ha-icon slot="leading-icon" icon="mdi:heat-pump"></ha-icon>
+          <div class="panel-content">
+            ${(this._config.individual ?? []).map((dev, idx) => {
+              const label = dev.name || dev.entity || `${this._t("flow_node_individual")} ${idx + 1}`;
+              return html`
+                <ha-expansion-panel outlined .header=${label} style="margin-bottom: 8px;">
+                  <ha-icon slot="leading-icon" icon=${dev.icon || "mdi:power-plug-outline"}></ha-icon>
+                  <div class="panel-content">
+                    <ha-form
+                      .hass=${this.hass}
+                      .data=${dev}
+                      .schema=${this._individualSchema()}
+                      .computeLabel=${this._computeLabel}
+                      @value-changed=${(ev: CustomEvent) =>
+                        this._individualPatch(idx, ev.detail.value as Partial<EnergyFlowIndividualDevice>)}
+                    ></ha-form>
+                    ${colorRow(this._t("editor_flow_individual_color"), dev.color, (v) =>
+                      this._individualPatch(idx, { color: v || undefined }),
+                    )}
+                    <div style="margin-top: 8px; display: flex; justify-content: flex-end;">
+                      <ha-button @click=${() => this._individualRemove(idx)}>
+                        <ha-icon icon="mdi:delete-outline" slot="icon"></ha-icon>
+                        Löschen
+                      </ha-button>
+                    </div>
+                  </div>
+                </ha-expansion-panel>
+              `;
+            })}
+            ${(this._config.individual ?? []).length < 2
+              ? html`
+                  <div style="margin-top: 8px;">
+                    <ha-button raised @click=${this._individualAdd}>
+                      <ha-icon icon="mdi:plus" slot="icon"></ha-icon>
+                      ${this._t("editor_flow_individual_add")}
+                    </ha-button>
+                  </div>
+                `
+              : nothing}
           </div>
         </ha-expansion-panel>
 

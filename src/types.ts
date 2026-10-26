@@ -407,6 +407,14 @@ export type EnergyFlowSource = "energy" | "entities";
 export type FlowBatteryVisibility = "auto" | "always" | "never";
 export type FlowSpeed = "slow" | "normal" | "fast";
 
+export interface EnergyFlowIndividualDevice {
+  entity?: string;
+  name?: string;
+  icon?: string;
+  color?: string;
+  unit_of_measurement?: string;
+}
+
 export interface M3EnergyFlowCardConfig {
   type: string;
   source?: EnergyFlowSource;
@@ -414,6 +422,8 @@ export interface M3EnergyFlowCardConfig {
   grid_import_entity?: string;
   grid_export_entity?: string;
   battery_entity?: string;
+  individual?: EnergyFlowIndividualDevice[];
+  subtract_individual?: boolean;
   name?: string;
   icon?: string;
   show_self_sufficiency?: boolean;

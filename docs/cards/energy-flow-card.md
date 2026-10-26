@@ -35,6 +35,15 @@ The battery node automatically appears only if a battery source is
 configured (`show_battery: auto`, default) — `always`/`never` force its
 visibility regardless.
 
+### Individual devices (e.g. Heat Pump, EV charger)
+
+Up to two individual consumers can be displayed in the diagram:
+- **`individual`**: List of devices with `entity`, optional `name`, `icon`, and `color`.
+  - Heat pumps (detected by "wärmepumpe" / "heat pump") automatically get `mdi:heat-pump` and the theme's heat color.
+  - Electric cars / wallboxes automatically get `mdi:car-electric`.
+- **`subtract_individual`** (`true`, default): subtracts individual consumer energy from the Home circle to show residual household consumption, matching the behavior of Energy Flow Card Plus.
+- In `source: energy`, individual devices configured in the HA Energy Dashboard (`device_consumption`) are auto-discovered if `individual` is not explicitly set.
+
 ### Animation
 
 The flow dots run via a CSS animation along the lines
@@ -47,6 +56,8 @@ paused) when `animation: "off"` or `prefers-reduced-motion` is active.
 |---|---|---|---|
 | `source` | `energy` \| `entities` | `energy` | Data source |
 | `solar_entity` / `grid_import_entity` / `grid_export_entity` / `battery_entity` | string | – | Only for `source: entities` |
+| `individual` | array | – | List of devices (`entity`, `name`, `icon`, `color`) |
+| `subtract_individual` | boolean | `true` | Subtract individual device energy from home total |
 | `name` | string | "Energy Flow" | Displayed name |
 | `icon` | string | `mdi:transmission-tower` | Icon in the icon tile |
 | `show_self_sufficiency` | boolean | `true` | Show the self-sufficiency bar |
